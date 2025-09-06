@@ -179,81 +179,37 @@ YCBCR_WEIGHTS = {
     "ITU-R_BT.709": (0.2126, 0.7152, 0.0722),
     "ITU-R_BT.601": (0.299, 0.587, 0.114)
 }
-
-def ycbcr444_to_rgb_Tensor(y, uv):
-    '''
-    y is 1xhxw Y float numpy array, in the range of [0, 1]
-    uv is 2x(h/2)x(w/2) UV float numpy array, in the range of [0, 1]
-    order: 0 nearest neighbor, 1: binear (default)
-    return value is 3xhxw RGB float numpy array, in the range of [0, 1]
-    '''
-    # uv = scipy.ndimage.zoom(uv, (1, 2, 2), order=order)
-    y = y.unsqueeze(0)
-    uv = uv.unsqueeze(0)
-    
-    y = y - (16/256)
-    uv = uv - (128/256)
-    yuv = torch.cat([y, uv], dim=1)
-    
-    T = torch.FloatTensor([[ 0.257,  0.504,   0.098],
-                        [-0.148, -0.291,   0.439],
-                        [ 0.439, -0.368,  -0.071]]).to(y.device)
-    T = torch.linalg.inv(T)
-    rgb = T.expand(yuv.size(0), -1, -1).bmm(yuv.flatten(2)).view_as(yuv)
-    return rgb.clamp(min=0, max=1)[0]
-
-def ycbcr444_to_rgb_BT709(y, uv):
-    '''
-    y is 1xhxw Y float numpy array, in the range of [0, 1]
-    uv is 2x(h/2)x(w/2) UV float numpy array, in the range of [0, 1]
-    order: 0 nearest neighbor, 1: binear (default)
-    return value is 3xhxw RGB float numpy array, in the range of [0, 1]
-    '''
-    y  = y.numpy()
-    uv = uv.numpy()
-    # uv = scipy.ndimage.zoom(uv, (1, 2, 2), order=order)
-    cb = uv[0:1, :, :]
-    cr = uv[1:2, :, :]
-    Kr, Kg, Kb = YCBCR_WEIGHTS["ITU-R_BT.709"]
-    r = y + (2 - 2 * Kr) * (cr - 0.5)
-    b = y + (2 - 2 * Kb) * (cb - 0.5)
-    g = (y - Kr * r - Kb * b) / Kg
-    rgb = np.concatenate((r, g, b), axis=0)
-    rgb = np.clip(rgb, 0., 1.)
-    return torch.from_numpy(rgb)
-
-def rgb_to_ycbcr_bt709(rgb):
-    """
-    rgb: 3 x H x W tensor in [0,1] (full-range)
-    returns: 3 x H x W tensor [Y, Cb, Cr] in [0,1]
-    """
-    Kr, Kb = 0.2126, 0.0722
-    Kg = 1 - Kr - Kb
-
+def rgb_to_ycbcr(rgb, standard="ITU-R_BT.709", studio_range=True):
+    # rgb: 3xHxW in [0,1]
+    Kr, Kg, Kb = YCBCR_WEIGHTS[standard][0], YCBCR_WEIGHTS[standard][1], YCBCR_WEIGHTS[standard][2]
     r, g, b = rgb[0], rgb[1], rgb[2]
+    Yp = Kr*r + Kg*g + Kb*b
+    Cb_lin = (b - Yp) / (2 * (1 - Kb))
+    Cr_lin = (r - Yp) / (2 * (1 - Kr))
+    if studio_range:
+        Y  = 16/255 + (219/255)*Yp
+        Cb = 128/255 + (224/255)*Cb_lin
+        Cr = 128/255 + (224/255)*Cr_lin
+    else:
+        Y, Cb, Cr = Yp, Cb_lin + 0.5, Cr_lin + 0.5
+    return torch.stack([Y, Cb, Cr], dim=0).clamp(0,1)
 
-    y  = Kr * r + Kg * g + Kb * b
-    cb = (b - y) / (2 * (1 - Kb)) + 0.5
-    cr = (r - y) / (2 * (1 - Kr)) + 0.5
-
-    ycbcr = torch.stack([y, cb, cr], dim=0)
-    return ycbcr.clamp(0,1)
-
-
-def rgb_to_yuv444_bt601(rgb):
-    # rgb: 3xhxw float tensor in [0,1]
-    T = torch.tensor([
-        [ 0.257,  0.504,  0.098],
-        [-0.148, -0.291,  0.439],
-        [ 0.439, -0.368, -0.071]
-    ], dtype=rgb.dtype, device=rgb.device)
-
-    offset = torch.tensor([16/255, 128/255, 128/255],
-                          dtype=rgb.dtype, device=rgb.device).view(3,1,1)
-
-    yuv = T @ rgb.flatten(1)   # shape (3, H*W)
-    yuv = yuv.view(3, *rgb.shape[1:]) + offset
-    return yuv.clamp(0,1)
+def ycbcr_to_rgb(ycbcr, standard="ITU-R_BT.709", studio_range=True):
+    # ycbcr: 3xHxW in [0,1]
+    Kr, Kg, Kb = YCBCR_WEIGHTS[standard][0], YCBCR_WEIGHTS[standard][1], YCBCR_WEIGHTS[standard][2]
+    Y, Cb, Cr = ycbcr[0], ycbcr[1], ycbcr[2]
+    if studio_range:
+        Yp  = (Y  - 16/255) / (219/255)
+        Cb_ = (Cb - 128/255) / (224/255)
+        Cr_ = (Cr - 128/255) / (224/255)
+        Cb_lin, Cr_lin = Cb_, Cr_
+    else:
+        Yp = Y
+        Cb_lin, Cr_lin = (Cb - 0.5), (Cr - 0.5)
+    R = Yp + Cr_lin * (2 * (1 - Kr))
+    B = Yp + Cb_lin * (2 * (1 - Kb))
+    G = (Yp - Kr*R - Kb*B) / Kg
+    return torch.stack([R, G, B], dim=0).clamp(0,1)
 
 ################## Color Transformation ##################
 
