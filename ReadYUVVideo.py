@@ -222,6 +222,39 @@ def ycbcr444_to_rgb_BT709(y, uv):
     rgb = np.clip(rgb, 0., 1.)
     return torch.from_numpy(rgb)
 
+def rgb_to_ycbcr_bt709(rgb):
+    """
+    rgb: 3 x H x W tensor in [0,1] (full-range)
+    returns: 3 x H x W tensor [Y, Cb, Cr] in [0,1]
+    """
+    Kr, Kb = 0.2126, 0.0722
+    Kg = 1 - Kr - Kb
+
+    r, g, b = rgb[0], rgb[1], rgb[2]
+
+    y  = Kr * r + Kg * g + Kb * b
+    cb = (b - y) / (2 * (1 - Kb)) + 0.5
+    cr = (r - y) / (2 * (1 - Kr)) + 0.5
+
+    ycbcr = torch.stack([y, cb, cr], dim=0)
+    return ycbcr.clamp(0,1)
+
+
+def rgb_to_yuv444_bt601(rgb):
+    # rgb: 3xhxw float tensor in [0,1]
+    T = torch.tensor([
+        [ 0.257,  0.504,  0.098],
+        [-0.148, -0.291,  0.439],
+        [ 0.439, -0.368, -0.071]
+    ], dtype=rgb.dtype, device=rgb.device)
+
+    offset = torch.tensor([16/255, 128/255, 128/255],
+                          dtype=rgb.dtype, device=rgb.device).view(3,1,1)
+
+    yuv = T @ rgb.flatten(1)   # shape (3, H*W)
+    yuv = yuv.view(3, *rgb.shape[1:]) + offset
+    return yuv.clamp(0,1)
+
 ################## Color Transformation ##################
 
 
